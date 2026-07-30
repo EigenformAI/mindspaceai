@@ -1,0 +1,101 @@
+twitter_csv: twitter.csv
+
+sources:
+  rss:
+    - name: "Simon Willison"
+      url: "https://simonwillison.net/atom/everything/"
+    - name: "Latent Space"
+      url: "https://www.latent.space/feed"
+    - name: "Dwarkesh Patel"
+      url: "https://www.dwarkeshpatel.com/feed"
+    - name: "HuggingFace Blog"
+      url: "https://huggingface.co/blog/feed.xml"
+
+  lesswrong:
+    enabled: true
+    limit: 40
+
+  alignment_forum:
+    enabled: true
+    limit: 40
+
+  hackernews:
+    enabled: true
+    queries:
+      - "LLM"
+      - "AI"
+      - "machine learning"
+      - "GPT"
+      - "Claude"
+      - "alignment"
+    limit_per_query: 20
+
+  github_trending:
+    enabled: true
+
+  hf_papers:
+    enabled: true
+    limit: 50
+
+  twitter:
+    enabled: true
+    limit_per_prompt: 15
+    prompts:
+      - label: "naming-moment"
+        text: >
+          Find X posts where AI researchers are mid-thought trying to name or formalize
+          an emerging idea that doesn't have clean language yet — things like
+          "what if X and Y are actually the same thing", or "I keep noticing this pattern
+          and I don't have a word for it yet". I want the conceptual frontier before it
+          becomes a paper or a trend: proto-paradigms, new organizing principles,
+          attempts to compress a cluster of related observations into a single concept.
+          Prioritise posts that feel like genuine intellectual excitement, not announcements.
+
+      - label: "cross-domain-unification"
+        text: >
+          Find X posts where someone notices the same structural principle appearing across
+          multiple AI domains simultaneously — in language models AND robotics, or in
+          alignment work AND capabilities, or in formal verification AND in-context learning.
+          Posts that suggest a deep underlying principle rather than a domain-specific trick.
+          Also include posts where a researcher is genuinely surprised that a concept
+          generalised further than expected.
+
+      - label: "inference-time-frontier"
+        text: >
+          Find X posts about what AI systems can do at inference time without retraining:
+          test-time adaptation, reasoning scaffolds, self-modification of context,
+          chain-of-thought variants, tool-use patterns that change model behaviour,
+          harness editing, in-context learning tricks that feel qualitatively different.
+          Prioritise posts that propose a general principle rather than a one-off demo,
+          and posts that suggest inference-time behaviour is deeper or stranger than
+          the training paradigm implies.
+
+      - label: "empirical-mysteries"
+        text: >
+          Find X posts where AI researchers are genuinely puzzled by an empirical finding
+          they cannot explain with current theory — something that works better than it
+          should, fails in a way that reveals hidden structure, or exhibits unexpected
+          phase transitions. Posts that feel like anomalies hunting for a theory.
+          Also include posts about recursive or self-referential behaviours in AI systems
+          that weren't explicitly trained for.
+
+embedding:
+  model: "nvidia/nemotron-3-embed-1b:free"
+
+clustering:
+  dims: 50
+  n_neighbors: 15
+  min_cluster_size: 5
+  min_samples: 3
+  selection: "eom"
+
+naming:
+  models:
+    - "google/gemma-4-26b-a4b-it:free"
+
+data_dir: "data"
+
+output:
+  dir: "./output"
+
+lookback_days: 7

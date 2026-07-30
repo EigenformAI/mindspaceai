@@ -1,0 +1,40 @@
+[project]
+name = "mindspaceai"
+version = "0.1.0"
+description = "Collects what the field is writing, then finds the concepts forming before they have a settled name"
+requires-python = ">=3.12"
+
+# Derived from the imports in the code, not carried over. The two
+# requirements.txt files this replaces were each incomplete on their own —
+# requirements.txt had umap-learn and scikit-learn but not openai or
+# python-dotenv, requirements-scrape.txt the reverse — so both had to be
+# installed and nothing said so. requirements-scrape.txt also omitted numpy and
+# pandas, which pipeline.py imports at module level, so the "lighter" install
+# documented in the README could not start at all.
+dependencies = [
+    # collection
+    "feedparser>=6.0.11",
+    "requests>=2.31.0",
+    "beautifulsoup4>=4.12.3",
+    "pyyaml>=6.0.1",
+    "openai>=1.0",           # Grok's Responses API is OpenAI-compatible
+    "python-dotenv>=1.0",
+    # analysis
+    "numpy>=1.26,<2.5",      # numba, via umap-learn, requires <2.5
+    "scikit-learn>=1.9.0",
+    "umap-learn>=0.5.12",
+    # visualisation
+    "plotly>=5.20.0",
+    "pandas>=2.2.0",
+]
+
+# Dropped, and why: sentence-transformers and tqdm were only used by the
+# article-level embed.py that paragraph-level embedding replaced. Nothing
+# imports them now.
+
+[tool.pytest.ini_options]
+# Flat layout: this is an application that is run (`uv run pipeline.py`), not a
+# package that is installed and imported, so there is no src/ directory. uv only
+# expects src/ for the --package layout.
+pythonpath = ["."]
+addopts = "-q"

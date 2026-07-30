@@ -1,0 +1,8 @@
+.env
+*.db
+output/
+__pycache__/
+.venv/
+*.pyc
+.~lock.*
+data/
