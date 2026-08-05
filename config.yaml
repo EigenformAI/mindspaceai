@@ -1,5 +1,3 @@
-twitter_csv: twitter.csv
-
 sources:
   rss:
     - name: "Simon Willison"
@@ -31,15 +29,15 @@ sources:
     limit_per_query: 20
 
   github_trending:
-    enabled: true
+    enabled: false
 
   hf_papers:
     enabled: true
-    limit: 50
+    limit_per_day: 50
 
   twitter:
     enabled: true
-    limit_per_prompt: 15
+    limit_per_prompt: 50
     prompts:
       - label: "naming-moment"
         text: >
@@ -60,15 +58,15 @@ sources:
           Also include posts where a researcher is genuinely surprised that a concept
           generalised further than expected.
 
-      - label: "inference-time-frontier"
-        text: >
-          Find X posts about what AI systems can do at inference time without retraining:
-          test-time adaptation, reasoning scaffolds, self-modification of context,
-          chain-of-thought variants, tool-use patterns that change model behaviour,
-          harness editing, in-context learning tricks that feel qualitatively different.
-          Prioritise posts that propose a general principle rather than a one-off demo,
-          and posts that suggest inference-time behaviour is deeper or stranger than
-          the training paradigm implies.
+      # - label: "inference-time-frontier"
+      #   text: >
+      #     Find X posts about what AI systems can do at inference time without retraining:
+      #     test-time adaptation, reasoning scaffolds, self-modification of context,
+      #     chain-of-thought variants, tool-use patterns that change model behaviour,
+      #     harness editing, in-context learning tricks that feel qualitatively different.
+      #     Prioritise posts that propose a general principle rather than a one-off demo,
+      #     and posts that suggest inference-time behaviour is deeper or stranger than
+      #     the training paradigm implies.
 
       - label: "empirical-mysteries"
         text: >
@@ -79,23 +77,46 @@ sources:
           Also include posts about recursive or self-referential behaviours in AI systems
           that weren't explicitly trained for.
 
+  arxiv:
+    enabled: true
+    categories: ["cs.AI", "cs.LG", "stat.ML"]
+    limit_per_slice: null
+
 embedding:
-  model: "nvidia/nemotron-3-embed-1b:free"
+  model: "text-embedding-3-small"
+  batch_size: 100
+
+modes:
+  week:
+    days: 7
+    min_cluster_size: 3
+
+  quarter:
+    background_days: 91
+    week_days: 7
+    min_cluster_size: 15
+    min_cluster_size_week: 8
+
+  arxiv:
+    days: 183
+    min_cluster_size: 15
+    max_points: 20000
+
+coherence:
+  measure_map: corrected
+
+  slider_max_weeks: 26
+  slider_min_background: 1000
+  slider_min_week: 50
 
 clustering:
-  dims: 50
   n_neighbors: 15
-  min_cluster_size: 5
-  min_samples: 3
-  selection: "eom"
-
-naming:
-  models:
-    - "google/gemma-4-26b-a4b-it:free"
-
-data_dir: "data"
+  n_components: 2
+  min_dist: 0.05
+  metric: "cosine"
+  min_samples: 2
 
 output:
-  dir: "./output"
+  dir: "./data/output/quarter"
 
 lookback_days: 7

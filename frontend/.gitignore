@@ -1,2 +1,0 @@
-# data is a symlink into ../output/<run> — never a copy
-data

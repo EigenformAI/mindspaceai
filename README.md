@@ -1,171 +1,107 @@
 # mindspace
 
-A pipeline for surfacing cutting-edge AI concepts from across the web, clustering them by semantic similarity, and visualising the emerging "basins of attraction" in the idea space.
+A pipeline for surfacing emerging AI concepts from across the web: it collects discourse and papers, clusters them, scores how *nameable* each cluster is, and exports star-map projections of the idea space.
 
-The goal isn't news — it's finding **proto-paradigms**: the conceptual frontier before it becomes a paper or a trend.
+The goal isn't news. It's finding **proto-paradigms** — the conceptual frontier before it has a settled name. The clusters worth watching are the ones whose documents plainly describe the same thing while sharing almost no vocabulary: a concept that exists in the discourse before anyone has named it.
+
+---
+
+## The three views
+
+| view | window | clustered on | named by | built here? |
+|---|---|---|---|---|
+| **week** | 7 days | its own projection | TF-IDF top terms | ✅ `mindspace week` |
+| **quarter** | 3 months, this week highlighted | one frozen projection | model panel → synthesis → distillation | ✅ `mindspace quarter` |
+| **arxiv** | 6 months | its own projection | TF-IDF top terms | ✅ `mindspace arxiv` |
+
+They read different clock speeds. Papers move in months, discourse moves in days, and the interesting thing is what crosses between them. All three cluster the same way — embeddings, UMAP, HDBSCAN — and differ in window, corpus, and how the clusters are named.
+
+`week` and `quarter` are independent: the week stands on its own map so its structure fills the sphere, while the quarter pins every week onto coordinates that never move. The rendered page that presents these is a separate project; this repo's deliverable is the data pack.
 
 ---
 
 ## How it works
 
 ```
-scrape → expand links → dedup → embed → cluster → visualise
+scrape → embed → cluster → score → name → export
 ```
 
-1. **Scrape** — pulls from RSS feeds, LessWrong, Alignment Forum, Hacker News, GitHub Trending, HuggingFace Papers, and X (via Grok live search with conceptual prompts)
-2. **Expand links** — follows arxiv and Reddit links found inside scraped content to fetch full paper abstracts and discussion threads
-3. **Dedup** — normalises URLs (arxiv `/pdf/` → `/abs/`, strips UTM params, etc.) and removes content-hash duplicates
-4. **Embed** — encodes all articles into semantic vectors using `sentence-transformers`
-5. **Cluster** — UMAP dimensionality reduction + HDBSCAN clustering, auto-labelled with TF-IDF
-6. **Visualise** — interactive Plotly scatter plot saved to `output/`
+1. **Scrape** — RSS, LessWrong, Alignment Forum, Hacker News, GitHub Trending, HuggingFace Papers, and X (via Grok's `x_search`). Every window is a half-open `[start, end)` range anchored on a date, so any past week can be collected on its own and re-collected safely.
+2. **Embed** — `openai/text-embedding-3-small` via OpenRouter, 1536 dimensions, incremental and resumable.
+3. **Cluster** — UMAP then HDBSCAN. For the quarter, UMAP is fitted **once over the whole corpus** and frozen.
+4. **Score** — each weekly cluster gets a lexical (TF-IDF) and a semantic (embedding) coherence score; the gap between their ranks is the signal.
+5. **Name** — the highest-gap clusters go to a panel of four models, whose descriptions are synthesised into one "attractor" sentence and distilled into a short label.
+6. **Export** — tensors and metadata for the TensorFlow Embedding Projector.
+
+[PIPELINE.md](PIPELINE.md) walks through each step with the reasoning and the measurements behind the settings.
 
 ---
 
-## Setup
+## Quickstart
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+cp .env.example .env          # OPENROUTER_API_KEY, XAI_API_KEY
+uv sync
 
-# scraping only (lighter)
-pip install -r requirements-scrape.txt
+uv run python -m mindspace                     # the command list
 
-# full pipeline including embedding/clustering
-pip install -r requirements.txt
+uv run python -m mindspace scrape --week 1     # a week into the database
+uv run python -m mindspace embed               # vectors for what is new
+
+uv run python -m mindspace week                # the weekly view — free
+
+uv run python -m mindspace arxiv scrape --start 2026-02 --end 2026-08
+uv run python -m mindspace arxiv embed         # papers have their own database
+uv run python -m mindspace arxiv               # the six-month paper view
+
+uv run python -m mindspace quarter             # cluster the three-month map
+uv run python -m mindspace fable               # panel + synthesis   [paid]
+uv run python -m mindspace label               # cheap labels        [paid]
+uv run python -m mindspace export              # projector tensors
 ```
 
-Copy `.env.example` to `.env` and add your xAI API key (needed for X/Twitter search):
+`fable` and `label` write names keyed to the cluster ids of the last `quarter` run, so they belong between `quarter` and `export` and nowhere else.
 
-```bash
-cp .env.example .env
-# edit .env and set XAI_API_KEY=xai-...
-```
+Backfilling is week by week — `scrape --week 2`, `--week 3`, and so on — because several sources cannot be asked for a wide historical range in one call.
 
 ---
 
-## Usage
+## What things cost
 
-### Full pipeline
+Every run records what it actually spent, taken from each API's own usage figures rather than a price list, and appended to `data/cost/`:
 
-```bash
-python3 pipeline.py
-```
-
-### Scrape only (no embedding/clustering)
-
-```bash
-python3 pipeline.py --scrape-only
-```
-
-### Expand links found in scraped content
-
-Fetches arxiv abstracts and Reddit threads linked from articles. Safe to re-run.
-
-```bash
-# preview what would be fetched
-python3 expand_links.py --dry-run
-
-# fetch links from all sources
-python3 expand_links.py
-
-# only follow links found in tweets (most signal-dense)
-python3 expand_links.py --source "Twitter/Grok"
-
-# follow two levels deep (can be large — use --limit)
-python3 expand_links.py --depth 2 --limit 100
-```
-
-### Deduplicate the database
-
-```bash
-python3 -c "import db; n = db.dedup_articles(); print(f'removed {n}, remaining:', db.article_count())"
-```
-
-### Browse scraped content
-
-```bash
-python3 -c "
-import sqlite3
-conn = sqlite3.connect('mindspace.db')
-cur = None
-for src, title, url in conn.execute('SELECT source, title, url FROM articles ORDER BY source, scraped_at DESC'):
-    if src != cur:
-        print(f'\n\n=== {src} ==='); cur = src
-    print(f'  {title[:90]}')
-" | less
-```
-
-### Article counts by source
-
-```bash
-python3 -c "
-import sqlite3
-conn = sqlite3.connect('mindspace.db')
-for r in conn.execute('SELECT source, count(*) FROM articles GROUP BY source ORDER BY count(*) DESC').fetchall():
-    print(f'{r[1]:4d}  {r[0]}')
-"
-```
+| step | typical |
+|---|---|
+| `scrape` (a week of X via Grok) | ~$1.30 |
+| `embed` | ~$0.01 per 1,000 documents |
+| `fable` (panel + synthesis, 10–15 clusters) | ~$0.80 |
+| `label` | ~$0.25 |
+| `arxiv embed` (six months of papers) | ~$0.30 |
+| everything else | free — local computation |
 
 ---
 
-## Configuration
+## Layout
 
-All behaviour is controlled by `config.yaml`:
+```
+mindspace/          the pipeline
+  cli.py            one entry point: python -m mindspace <command>
+  sources/          one adapter per source
+  export/           projector tensors, per view
+scripts/            operator tools (db stats, a paid Grok probe)
+data/               gitignored: the corpus, outputs per view, cost ledgers
+```
 
-| Section | Key | Description |
-|---|---|---|
-| `lookback_days` | — | How far back to scrape (default: 7) |
-| `sources.rss` | `name`, `url` | RSS feeds to scrape |
-| `sources.lesswrong` | `limit` | Posts to fetch from LessWrong |
-| `sources.alignment_forum` | `limit` | Posts from Alignment Forum |
-| `sources.hackernews` | `queries`, `limit_per_query` | HN Algolia search terms |
-| `sources.hf_papers` | `limit` | HuggingFace Papers count |
-| `sources.twitter` | `prompts`, `limit_per_prompt` | Grok search prompts (see below) |
-| `embedding.model` | — | Sentence-transformer model name |
-| `clustering` | — | UMAP + HDBSCAN parameters |
-
-### Grok search prompts
-
-The Twitter/X scraper is prompt-driven rather than handle-driven. Each prompt is a natural-language description of the kind of post you're looking for. The current prompts target:
-
-- **naming-moment** — researchers mid-thought trying to name an emerging idea
-- **cross-domain-unification** — the same structural principle appearing across multiple AI domains
-- **inference-time-frontier** — what AI can do at inference time without retraining
-- **empirical-mysteries** — findings researchers can't explain with current theory
-
-Edit or add prompts in `config.yaml` under `sources.twitter.prompts`.
+`data/` holds paid scrapes that cannot be bought again, and `git clean -xdf` deletes ignored files — it is worth a backup outside the repo. Set `MINDSPACE_DATA` to keep it somewhere else entirely.
 
 ---
 
-## Data
+## Design decisions worth knowing
 
-All scraped and extracted content is stored in `mindspace.db` (SQLite). The schema:
+**The projection is frozen.** UMAP re-fitted on a shifted window rearranges the whole map, which makes it impossible to tell whether a region moved because the ideas moved or because the algorithm did. Fitting once over the corpus and caching the coordinates means a basin keeps its position; a window only chooses which points are lit.
 
-```
-articles(id, source, url, title, content, author, published_at, scraped_at, embedding)
-```
+**Windows are half-open and anchored on a date.** `[start, end)` ranges chain without a document falling into two of them, and a date anchor (rather than "now") makes two runs on the same day identical — which matters because generated names are addressed to cluster ids, and a shifted window silently changes those ids.
 
-Source values: `Simon Willison`, `LessWrong`, `Alignment Forum`, `HackerNews`, `GitHub Trending`, `HuggingFace Papers`, `Twitter/Grok`, `web/arxiv`, `web/reddit`, `web/extracted`
+**The name gap is a difference of ranks, not of values.** TF-IDF cosines sit near 0 and embedding cosines near 0.4 for nearly every cluster, so a raw difference is positive for almost everything and separates nothing.
 
-The database is append-only by default — re-running scrapes will not overwrite existing articles.
-
----
-
-## Files
-
-```
-pipeline.py          — main orchestration script
-expand_links.py      — link extraction and fetching
-db.py                — SQLite interface, URL normalisation, dedup
-embed.py             — sentence-transformer embeddings
-cluster.py           — UMAP + HDBSCAN clustering
-viz.py               — Plotly visualisation
-config.yaml          — all configuration
-scrapers/
-  rss.py             — RSS feed scraper
-  lesswrong.py       — LessWrong/Alignment Forum GraphQL scraper
-  hackernews.py      — HN Algolia API scraper
-  github_trending.py — GitHub Trending scraper
-  hf_papers.py       — HuggingFace Papers scraper
-  grok_twitter.py    — xAI Grok Responses API + x_search tool
-```
+**One key, one bill.** Every model call — embeddings, the panel, the synthesis, the labels — is routed through OpenRouter, so there is a single place for credentials to be wrong and a single ledger of what was spent.
