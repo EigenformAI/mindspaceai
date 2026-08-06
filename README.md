@@ -11,12 +11,14 @@ The goal isn't news. It's finding **proto-paradigms** — the conceptual frontie
 | view | window | clustered on | named by | built here? |
 |---|---|---|---|---|
 | **week** | 7 days | its own projection | TF-IDF top terms | ✅ `mindspace week` |
-| **quarter** | 3 months, this week highlighted | one frozen projection | model panel → synthesis → distillation | ✅ `mindspace quarter` |
+| **quarter** | 3 months, each week highlighted in turn | one frozen projection | TF-IDF, or model panel → synthesis → distillation | ✅ `mindspace quarter` |
 | **arxiv** | 6 months | its own projection | TF-IDF top terms | ✅ `mindspace arxiv` |
 
 They read different clock speeds. Papers move in months, discourse moves in days, and the interesting thing is what crosses between them. All three cluster the same way — embeddings, UMAP, HDBSCAN — and differ in window, corpus, and how the clusters are named.
 
 `week` and `quarter` are independent: the week stands on its own map so its structure fills the sphere, while the quarter pins every week onto coordinates that never move. The rendered page that presents these is a separate project; this repo's deliverable is the data pack.
+
+The quarter comes in two flavours from the same clustering. Run it alone and every cluster carries its TF-IDF top terms — free, and enough to read the map. Add the naming pass and the highest-gap clusters of **each** week get a panel-and-synthesis name instead, so moving through the weeks shows the names changing as well as the constellations.
 
 ---
 
@@ -55,12 +57,19 @@ uv run python -m mindspace arxiv embed         # papers have their own database
 uv run python -m mindspace arxiv               # the six-month paper view
 
 uv run python -m mindspace quarter             # cluster the three-month map
-uv run python -m mindspace fable               # panel + synthesis   [paid]
+uv run python -m mindspace export              # projector tensors — TF-IDF names
+uv run python -m mindspace viz                 # redraw the HTML
+
+# optional: name the highest-gap clusters of every week, then re-export
+uv run python -m mindspace fable --all-weeks   # panel + synthesis   [paid]
 uv run python -m mindspace label               # cheap labels        [paid]
-uv run python -m mindspace export              # projector tensors
+uv run python -m mindspace export
+uv run python -m mindspace viz
 ```
 
-`fable` and `label` write names keyed to the cluster ids of the last `quarter` run, so they belong between `quarter` and `export` and nowhere else.
+`fable` and `label` write names keyed to the cluster ids of the last `quarter` run, so they belong between `quarter` and `export` and nowhere else. Names are stored per week, because cluster ids restart with every weekly clustering — cluster 3 in May and cluster 3 in August are unrelated. `fable --week YYYY-MM-DD` names a single week; the run is resumable and skips weeks already named.
+
+Leaving both naming steps out is a supported outcome, not a half-finished one: every view falls back to TF-IDF terms, and the whole quarter costs nothing.
 
 Backfilling is week by week — `scrape --week 2`, `--week 3`, and so on — because several sources cannot be asked for a wide historical range in one call.
 
@@ -74,7 +83,8 @@ Every run records what it actually spent, taken from each API's own usage figure
 |---|---|
 | `scrape` (a week of X via Grok) | ~$1.30 |
 | `embed` | ~$0.01 per 1,000 documents |
-| `fable` (panel + synthesis, 10–15 clusters) | ~$0.80 |
+| `fable` (one week, 10–15 clusters) | ~$0.55 |
+| `fable --all-weeks` (11 weeks, 116 clusters) | ~$6.15 |
 | `label` | ~$0.25 |
 | `arxiv embed` (six months of papers) | ~$0.30 |
 | everything else | free — local computation |

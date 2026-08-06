@@ -89,7 +89,7 @@ embedding:
 modes:
   week:
     days: 7
-    min_cluster_size: 3
+    min_cluster_size: 8
 
   quarter:
     background_days: 91
@@ -99,7 +99,7 @@ modes:
 
   arxiv:
     days: 183
-    min_cluster_size: 15
+    min_cluster_size: 100
     max_points: 20000
 
 coherence:

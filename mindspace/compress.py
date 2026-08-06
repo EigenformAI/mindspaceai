@@ -198,6 +198,10 @@ _COMPRESSORS = [
 
 _LABEL_MODEL = "anthropic/claude-haiku-4.5"
 
+# Clusters named concurrently. Six keeps well inside OpenRouter's rate
+# limits while turning a ~2-hour eleven-week run into ~20 minutes.
+CLUSTER_WORKERS = 6
+
 
 def _available_models() -> list[dict]:
     key = os.environ.get("OPENROUTER_API_KEY", "")
@@ -250,11 +254,257 @@ def _synthesise(compressions: dict[str, str], synth_fn,
         return f"[ERROR: {exc}]"
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# Main
+
+def _name_batch(real_clusters: list[dict], db_path: str, models: list[dict],
+                synth_fn, compress_prompt: str, synth_prompt: str,
+                gap_by_id: dict) -> list[dict]:
+    """Compress → synthesise → collect, for one set of clusters.
+
+    Split out so a single week and a whole slider's worth of weeks run through
+    exactly the same naming path; a second copy of this loop would be a second
+    place for the panel, the prompts or the error handling to drift.
+    """
+    all_urls = [m["url"] for c in real_clusters for m in c["members"]]
+    content_map = _get_content_map(db_path, all_urls) if all_urls else {}
+
+    def one(c: dict) -> dict:
+        prompt = compress_prompt.format(
+            keywords=c["label"],
+            samples=_build_samples(c["members"], content_map),
+        )
+
+        # Fan out to all models in parallel
+        compressions: dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=len(models)) as pool:
+            futures = {pool.submit(m["fn"], prompt): m["name"] for m in models}
+            for future in as_completed(futures):
+                name = futures[future]
+                try:
+                    compressions[name] = future.result()
+                except Exception as exc:
+                    compressions[name] = f"[ERROR: {exc}]"
+
+        attractor = _synthesise(compressions, synth_fn, synth_prompt) if synth_fn else None
+        return {
+            "cluster_id": c["cluster_id"],
+            "size": c["size"],
+            "keywords": c["label"],
+            "name_gap": c.get("name_gap", gap_by_id.get(c["cluster_id"])),
+            "compressions": compressions,
+            "attractor": attractor,
+        }
+
+    # Clusters run concurrently, not just the panel within one cluster. Each
+    # cluster is three sequential round trips (compress → synthesise → label),
+    # so a serial loop spends most of its life waiting: eleven weeks measured
+    # at roughly a minute per cluster, nearly two hours of mostly idle time.
+    results: list[dict] = [None] * len(real_clusters)
+    with ThreadPoolExecutor(max_workers=CLUSTER_WORKERS) as pool:
+        futures = {pool.submit(one, c): i for i, c in enumerate(real_clusters)}
+        for future in as_completed(futures):
+            i = futures[future]
+            c = real_clusters[i]
+            try:
+                results[i] = future.result()
+            except Exception as exc:
+                # One cluster failing must not lose the rest of the week's work.
+                results[i] = {"cluster_id": c["cluster_id"], "size": c["size"],
+                              "keywords": c["label"], "name_gap": c.get("name_gap"),
+                              "compressions": {}, "attractor": f"[ERROR: {exc}]"}
+            r = results[i]
+            print(f"── Cluster {r['cluster_id']} (n={r['size']}) ─── {r['keywords']}")
+            for model_name in [m["name"] for m in models]:
+                print(f"  {model_name:<22} {r['compressions'].get(model_name, '')}")
+            if r["attractor"]:
+                print(f"  {'★ attractor':<22} {r['attractor']}")
+            print()
+    return results
+
+
+def frame_clusters(frame: dict, db_path: str, top_n: int) -> list[dict]:
+    """One week's positive-gap clusters, in the shape `compress` already expects.
+
+    frames.json stores membership as positions, not ids: `cluster["points"]`
+    indexes into `frame["week_idx"]`, which indexes the corpus row order saved
+    beside the projection. Resolving that chain here rather than re-clustering
+    means the naming pass and the weekly view describe exactly the same
+    documents — there is no second clustering to drift from the first.
+    """
+    import numpy as np
+
+    ids = [str(x) for x in np.load(paths.QUARTER / "projection.npz",
+                                   allow_pickle=True)["article_ids"]]
+    week_idx = frame["week_idx"]
+
+    ranked = sorted((c for c in frame["clusters"]
+                     if c.get("name_gap") is not None and c["name_gap"] > 0),
+                    key=lambda c: -c["name_gap"])[:top_n]
+    if not ranked:
+        return []
+
+    wanted = {ids[week_idx[p]] for c in ranked for p in c["points"]}
+    conn = sqlite3.connect(db_path)
+    url_of = dict(conn.execute(
+        f"SELECT id, url FROM articles WHERE id IN ({','.join('?' * len(wanted))})",
+        list(wanted)).fetchall())
+    conn.close()
+
+    out = []
+    for c in ranked:
+        members = [{"url": url_of[ids[week_idx[p]]]}
+                   for p in c["points"] if ids[week_idx[p]] in url_of]
+        out.append({"cluster_id": c["cluster_id"], "size": c["size"],
+                    "label": c["keywords"], "members": members,
+                    "name_gap": c["name_gap"]})
+    return out
+
+
+def load_week_names(quarter_dir, latest_week: str | None = None):
+    """Fable labels and attractor texts, keyed by week.
+
+    Prefers the week-keyed files written by `fable --all-weeks`. Falls back to
+    the flat pair, which only ever described a single week — attaching those to
+    the newest week is what the display code used to assume implicitly, so an
+    older output tree keeps rendering exactly as before.
+
+    Returns ({week: {cluster_id: label}}, {week: {cluster_id: attractor}}).
+    """
+    from pathlib import Path
+    quarter_dir = Path(quarter_dir)
+    labels: dict[str, dict[int, str]] = {}
+    attractors: dict[str, dict[int, str]] = {}
+
+    lp = quarter_dir / "name_gap_ai_labels_by_week.json"
+    if lp.exists():
+        labels = {w: {int(k): v for k, v in d.items()}
+                  for w, d in json.loads(lp.read_text()).items()}
+    cp_ = quarter_dir / "name_gap_compressions_by_week.json"
+    if cp_.exists():
+        for w, rows in json.loads(cp_.read_text()).items():
+            attractors[w] = {int(r["cluster_id"]): r["attractor"]
+                             for r in rows if r.get("attractor")}
+
+    if not labels and latest_week:
+        flat = quarter_dir / "name_gap_ai_labels.json"
+        if flat.exists():
+            labels = {latest_week: {int(k): v
+                                    for k, v in json.loads(flat.read_text()).items()}}
+        flat_c = quarter_dir / "name_gap_compressions.json"
+        if flat_c.exists():
+            attractors = {latest_week: {int(r["cluster_id"]): r["attractor"]
+                                        for r in json.loads(flat_c.read_text())
+                                        if r.get("attractor")}}
+    return labels, attractors
+
+
+def compress_frames(top_n: int, db_path: str, synth_model: str | None,
+                    only_week: str | None = None) -> None:
+    """Name every week's high-gap clusters, not just the newest one.
+
+    The walkthrough in the brief names a cluster for week one, then for week
+    two, and so on. The clustering for all of them already exists in
+    frames.json; what was missing was that `compress` only ever read
+    name_gaps.json, which holds the current week alone.
+
+    Output is keyed by week because cluster ids restart with every weekly
+    clustering: cluster 3 in May and cluster 3 in August are unrelated, and a
+    flat map would let one silently overwrite the other.
+    """
+    frames_path = paths.QUARTER / "frames.json"
+    if not frames_path.exists():
+        print(f"{frames_path} not found — run `quarter` first", file=sys.stderr)
+        sys.exit(1)
+    frames = json.loads(frames_path.read_text())
+    if only_week:
+        frames = [f for f in frames if f["week_end"] == only_week]
+        if not frames:
+            print(f"no frame for week {only_week}", file=sys.stderr)
+            sys.exit(1)
+
+    models = _available_models()
+    if not models:
+        print("OPENROUTER_API_KEY is not set — every model here routes through it.",
+              file=sys.stderr)
+        sys.exit(1)
+
+    synth_fn = label_fn = None
+    or_key = os.environ.get("OPENROUTER_API_KEY", "")
+    if synth_model:
+        def synth_fn(prompt: str, _k=or_key, _m=synth_model) -> str:
+            return _call_openrouter(prompt, _m, _k, max_tokens=1024)
+        def label_fn(prompt: str, _k=or_key) -> str:
+            return _call_openrouter(prompt, _LABEL_MODEL, _k, max_tokens=40)
+
+    labels_path = paths.QUARTER / "name_gap_ai_labels_by_week.json"
+    comps_path = paths.QUARTER / "name_gap_compressions_by_week.json"
+    # Resume rather than restart: naming is paid, and a run over eleven weeks
+    # is long enough that it will sometimes be interrupted.
+    by_week_labels = json.loads(labels_path.read_text()) if labels_path.exists() else {}
+    by_week_comps = json.loads(comps_path.read_text()) if comps_path.exists() else {}
+
+    print(f"{len(frames)} week(s) · panel: {', '.join(m['name'] for m in models)}"
+          + (f" · synth: {synth_model}" if synth_model else ""))
+
+    for frame in frames:
+        week = frame["week_end"]
+        if week in by_week_labels and not only_week:
+            print(f"\n══ {week} — already named, skipping ══")
+            continue
+
+        clusters = frame_clusters(frame, db_path, top_n)
+        if not clusters:
+            print(f"\n══ {week} — no positive-gap clusters ══")
+            continue
+        print(f"\n══ {week} — {len(clusters)} cluster(s) with a positive gap ══\n")
+
+        results = _name_batch(clusters, db_path, models, synth_fn,
+                              _NAME_GAP_PROMPT, _NAME_GAP_SYNTH_PROMPT, {})
+
+        labels: dict[str, str] = {}
+        if label_fn:
+            def distil(r: dict):
+                src = r.get("attractor") or next(iter(r["compressions"].values()), "")
+                # "[no valid compressions to synthesise]" is what _synthesise
+                # returns when every model failed. It does not start with
+                # "[ERROR", so an earlier guard let it through to be distilled
+                # into a real-looking sidebar label.
+                if not src or src.startswith("[ERROR") or src.startswith("[no valid"):
+                    return r["cluster_id"], None
+                try:
+                    return r["cluster_id"], _clean_label(
+                        label_fn(_LABEL_PROMPT.format(text=src)))
+                except Exception as exc:
+                    print(f"  [{r['cluster_id']:3d}] [label error: {exc}]")
+                    return r["cluster_id"], None
+
+            with ThreadPoolExecutor(max_workers=CLUSTER_WORKERS) as pool:
+                for cid, label in pool.map(distil, results):
+                    if label:
+                        labels[str(cid)] = label
+                        print(f"  [{cid:3d}] {label}")
+
+        by_week_labels[week] = labels
+        by_week_comps[week] = results
+        # Written after every week, so an interrupted run keeps what it paid
+        # for — the ledger included. Recording spend only at the end meant a
+        # run stopped halfway kept its names but lost the record of the money
+        # that produced them.
+        labels_path.write_text(json.dumps(by_week_labels, indent=2))
+        comps_path.write_text(json.dumps(by_week_comps, indent=2, default=str))
+        _write_spend(paths.COST, f"name_gap_weekly {week}")
+        _SPEND.clear()
+
+    named = sum(len(v) for v in by_week_labels.values())
+    print(f"\n{named} cluster(s) named across {len(by_week_labels)} week(s)")
+    print(f"Saved → {labels_path}\n        {comps_path}")
+    # Spend was written per week above; nothing left to record here.
+
 
 def compress(clusters_path: str, top_n: int, db_path: str,
              synth_model: str | None = None, rank_by: str = "size",
-             gaps_path: str | None = None) -> None:
+             gaps_path: str | None = None,
+             frames: list[dict] | None = None) -> None:
     clusters = json.loads(Path(clusters_path).read_text())
     gap_by_id: dict[int, float] = {}
     if rank_by == "name-gap":
@@ -289,50 +539,8 @@ def compress(clusters_path: str, top_n: int, db_path: str,
     print(f"Models: {', '.join(m['name'] for m in models)}")
     print(f"Clusters: {len(real_clusters)}  (top {top_n} by {rank_by}, noise excluded)\n")
 
-    # Pre-fetch all article content in one DB round-trip
-    all_urls = [m["url"] for c in real_clusters for m in c["members"]]
-    content_map = _get_content_map(db_path, all_urls)
-
-    results: list[dict] = []
-
-    for c in real_clusters:
-        samples_text = _build_samples(c["members"], content_map)
-        prompt = compress_prompt.format(
-            keywords=c["label"],
-            samples=samples_text,
-        )
-
-        # Fan out to all models in parallel
-        compressions: dict[str, str] = {}
-        with ThreadPoolExecutor(max_workers=len(models)) as pool:
-            futures = {pool.submit(m["fn"], prompt): m["name"] for m in models}
-            for future in as_completed(futures):
-                name = futures[future]
-                try:
-                    compressions[name] = future.result()
-                except Exception as exc:
-                    compressions[name] = f"[ERROR: {exc}]"
-
-        attractor = None
-        if synth_fn:
-            attractor = _synthesise(compressions, synth_fn, synth_prompt)
-
-        results.append({
-            "cluster_id": c["cluster_id"],
-            "size": c["size"],
-            "keywords": c["label"],
-            "name_gap": gap_by_id.get(c["cluster_id"]),
-            "compressions": compressions,
-            "attractor": attractor,
-        })
-
-        # Print as we go
-        print(f"── Cluster {c['cluster_id']} (n={c['size']}) ─── {c['label']}")
-        for model_name in [m["name"] for m in models]:
-            print(f"  {model_name:<22} {compressions.get(model_name, '')}")
-        if attractor:
-            print(f"  {'★ attractor':<22} {attractor}")
-        print()
+    results = _name_batch(real_clusters, db_path, models, synth_fn,
+                          compress_prompt, synth_prompt, gap_by_id)
 
     # ── Label generation ─────────────────────────────────────────────────────
     # Ask Haiku to distill each attractor (or best compression) to 2-5 words
@@ -485,10 +693,17 @@ def main(argv: list[str] | None = None):
                         help="Skip compress/synth; read output/compressions.json and regenerate labels + viz only")
     parser.add_argument("--rank-by", choices=["size", "name-gap"], default="size",
                         help="Cluster selection: 'size' (default) or 'name-gap' (requires output/name_gaps.json from name_gap.py)")
+    parser.add_argument("--all-weeks", action="store_true",
+                        help="name the high-gap clusters of every weekly frame, "
+                             "not just the newest week")
+    parser.add_argument("--week", metavar="YYYY-MM-DD",
+                        help="name one weekly frame by its week_end date")
     parser.add_argument("--gaps", default=str(paths.QUARTER / "name_gaps.json"),
                         help="Path to name_gaps.json (used with --rank-by name-gap)")
     args = parser.parse_args(argv)
-    if args.labels_only:
+    if args.all_weeks or args.week:
+        compress_frames(args.top, args.db, args.synth or None, args.week)
+    elif args.labels_only:
         label_only(args.db, str(paths.QUARTER / "compressions.json"))
     else:
         compress(args.clusters, args.top, args.db,

@@ -526,25 +526,21 @@ def build_slider_viz(frames_data: list[dict], coords: np.ndarray,
 
     # Fable-derived short labels outrank the cheap topical ones where they
     # exist (newest week's top clusters, per the user's decision 2026-08-03).
-    ai_labels = {}
-    lp = out_path / "name_gap_ai_labels.json"
-    if lp.exists():
-        try:
-            ai_labels = {int(k): v for k, v in json.loads(lp.read_text()).items()}
-        except (json.JSONDecodeError, ValueError):
-            ai_labels = {}
+    from .compress import load_week_names
+    latest_week = frames_data[-1]["week_end"] if frames_data else None
+    labels_by_week, attractors_by_week = load_week_names(out_path, latest_week)
 
     sidebar_frames = []
-    for i, f in enumerate(frames_data):
-        is_last = i == len(frames_data) - 1
+    for f in frames_data:
+        wk_labels = labels_by_week.get(f["week_end"], {})
+        wk_attractors = attractors_by_week.get(f["week_end"], {})
         sidebar_frames.append({
             "week_end": f["week_end"],
             "n_points": len(f["week_idx"]),
             "clusters": [
                 {**c,
-                 "label": ((ai_labels.get(c["cluster_id"]) if is_last else None)
-                           or c.get("label")),
-                 "attractor": attractors.get(c["cluster_id"]) if is_last else None}
+                 "label": wk_labels.get(c["cluster_id"]) or c.get("label"),
+                 "attractor": wk_attractors.get(c["cluster_id"])}
                 for c in f.get("clusters", [])
             ],
         })

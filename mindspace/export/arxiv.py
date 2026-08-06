@@ -150,9 +150,16 @@ def main(argv: list[str] | None = None) -> int:
         {"tensorName": "UMAP 3-D cluster map", "tensorShape": [n, 3],
          "tensorPath": "data/umap3d.bytes", "metadataPath": "data/metadata.tsv"},
     ]}, indent=2))
+    from collections import Counter
+    months = Counter((p["published_at"] or "")[:7] for p in papers)
+    last_day = hi - timedelta(days=1)
+    month_end = (last_day.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
     (out / "arxiv_meta.json").write_text(json.dumps({
         "window": f"{lo}..{hi}", "papers": len(papers), "shipped": n,
-        "min_cluster_size": mcs, "noise": noise, "clusters": clusters}, indent=2))
+        "min_cluster_size": mcs, "noise": noise,
+        "months": dict(sorted(months.items())),
+        "partial_last_month": last_day < month_end,
+        "clusters": clusters}, indent=2))
     print(f"saved -> {out}/")
     return 0
 

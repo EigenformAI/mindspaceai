@@ -52,12 +52,16 @@ def build(background_days: int = 91, week_days: int = 7) -> None:
             return text
         return text[:n].rsplit(" ", 1)[0] + " …"
 
-    attractor_of: dict[int, str] = {}
-    comp = paths.QUARTER / "name_gap_compressions.json"
-    if comp.exists():
-        for r in json.loads(comp.read_text()):
-            if r.get("attractor"):
-                attractor_of[int(r["cluster_id"])] = _plain(r["attractor"])
+    # Names are per week: cluster ids restart with every weekly clustering, so
+    # a flat map can only ever describe one of them.
+    from ..compress import load_week_names
+    _frames_peek = paths.QUARTER / "frames.json"
+    _latest = (json.loads(_frames_peek.read_text())[-1]["week_end"]
+               if _frames_peek.exists() else None)
+    labels_by_week, attractors_by_week = load_week_names(paths.QUARTER, _latest)
+    attractor_of: dict[int, str] = {
+        cid: _plain(text)
+        for cid, text in (attractors_by_week.get(_latest) or {}).items()}
 
     band_of, gap_of, desc_of = {}, {}, {}
     ai_labels: dict[int, str] = {}
@@ -65,9 +69,7 @@ def build(background_days: int = 91, week_days: int = 7) -> None:
     if gaps_path.exists() and clusters_path.exists():
         from ..viz import coherence_color
         gaps = {g["cluster_id"]: g for g in json.loads(gaps_path.read_text())}
-        lp = paths.QUARTER / "name_gap_ai_labels.json"
-        if lp.exists():
-            ai_labels = {int(k): v for k, v in json.loads(lp.read_text()).items()}
+        ai_labels = dict(labels_by_week.get(_latest) or {})
         for c in json.loads(clusters_path.read_text()):
             g = gaps.get(c["cluster_id"])
             if not g or g.get("lexical_rank") is None:
@@ -114,8 +116,8 @@ def build(background_days: int = 91, week_days: int = 7) -> None:
                 clusters_out = []
                 for c in f.get("clusters", []):
                     bucket = coherence_bucket(c.get("name_gap"))
-                    fable_name = (ai_labels.get(c.get("cluster_id"))
-                                  if f["week_end"] == latest_week else None)
+                    fable_name = (labels_by_week.get(f["week_end"], {})
+                                  .get(c.get("cluster_id")))
                     name = _cell(fable_name or c.get("label")
                                  or c.get("keywords"), 60, empty="(unnamed)")
                     member_pos = [f["week_idx"][pnt] for pnt in c.get("points", [])

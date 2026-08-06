@@ -47,9 +47,9 @@ Both windows are half-open `[start, today)`, measured from a **date** (not a tim
 Each cluster gets an automatic **TF-IDF keyword label** (e.g. `alignment · human · gpt-5 · value`).
 
 **Output files:**
-- `data/output/quarter/clusters.json` — this week's clusters (what the naming steps read)
+- `data/output/quarter/clusters.json` — the newest week's clusters
+- `data/output/quarter/frames.json` — every weekly stop; this is what the naming pass walks
 - `data/output/quarter/name_gaps.json` — coherence scores per cluster (step 4)
-- `data/output/quarter/frames.json` — clusters for every weekly slider stop
 - `data/output/quarter/projection.npz` — the fixed 2D coordinates
 - `data/output/quarter/background.html`, `data/output/quarter/slider.html` — the 2D views
 
@@ -80,14 +80,14 @@ A cluster with a high positive gap is *semantically tight but lexically scattere
 
 ## Step 5 — Compress
 
-`mindspace.compress --rank-by name-gap` takes the **top 15 clusters by name gap** (only positive gaps qualify) and, for each, sends titles and excerpts to 4 LLMs **in parallel** — all via OpenRouter on the one key:
+`mindspace fable --all-weeks` walks every weekly frame and takes that week's **clusters with a positive name gap** (7–14 of them per week, 116 across the eleven weeks) and, for each, sends titles and excerpts to 4 LLMs **in parallel** — all via OpenRouter on the one key:
 
 - `openai/gpt-4o-mini`
 - `x-ai/grok-4.5`
 - `anthropic/claude-haiku-4.5`
 - `google/gemini-2.5-flash`
 
-with the name-gap prompt: describe plainly the shared referent these documents are circling *without a shared term*. All four compressions are saved to `data/output/quarter/name_gap_compressions.json` and `.md`.
+with the name-gap prompt: describe plainly the shared referent these documents are circling *without a shared term*. All four compressions are saved to `data/output/quarter/name_gap_compressions_by_week.json`.
 
 ---
 
@@ -101,7 +101,7 @@ All 4 compressions per cluster are fed to **Claude Fable** (via OpenRouter), ask
 
 Each Fable attractor is distilled by **Claude Haiku** into a 2–5 word noun phrase — the sidebar register: `Plausibility-verification gap`, `Simulacral competence`, `Competence Authority Decoupling`.
 
-Saved to `data/output/quarter/name_gap_ai_labels.json`, keyed by cluster id. These labels are only ever valid for the clustering they were generated against — which is why they are a separate command, run only on a clustering that finished cleanly.
+Saved to `data/output/quarter/name_gap_ai_labels_by_week.json`, keyed by week and then by cluster id — cluster ids restart with every weekly clustering, so a flat map would let August's names overwrite May's without any error. These labels are only ever valid for the clustering they were generated against — which is why they are a separate command, run only on a clustering that finished cleanly.
 
 Separately, `mindspace/labels.py` gives **every** cluster at **every** weekly stop a cheap topical label (one Haiku call each, direct from keywords+titles, ≈ $0.25 for all ~270). Display surfaces prefer the Fable label where one exists and fall back to the cheap one, then to raw keywords.
 
@@ -165,10 +165,14 @@ uv run python -m mindspace            # the command list
 uv run python -m mindspace scrape --week 1     # a week into the database
 uv run python -m mindspace embed               # vectors for what is new   (~$0.01/1k)
 uv run python -m mindspace quarter             # cluster: background + week + slider frames
-uv run python -m mindspace fable               # panel + Fable on the top name gaps  (~$0.80)
-uv run python -m mindspace label               # cheap labels for the rest           (~$0.25)
-uv run python -m mindspace export              # projector tensors
+uv run python -m mindspace export              # projector tensors — TF-IDF names
 uv run python -m mindspace viz                 # redraw HTML without re-clustering
+
+# optional naming pass, then re-export so the names reach the tensors:
+uv run python -m mindspace fable --all-weeks   # every week's top name gaps  (~$6.15)
+uv run python -m mindspace label               # cheap labels for the rest   (~$0.25)
+uv run python -m mindspace export
+uv run python -m mindspace viz
 
 # viz #2 — one week on its own map, free, independent of the above:
 uv run python -m mindspace week
