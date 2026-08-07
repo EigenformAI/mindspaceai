@@ -29,7 +29,7 @@ import numpy as np
 import yaml
 
 from .. import db, paths
-from ..cluster import _label_cluster, cluster_hdbscan, reduce_umap
+from ..cluster import cluster_hdbscan, label_clusters, reduce_umap
 
 
 def _month_range(start: str, end: str | None) -> tuple[date, date]:
@@ -106,11 +106,12 @@ def main(argv: list[str] | None = None) -> int:
           f"at min_cluster_size {mcs}")
 
     texts = [f"{p['title']} {p['content']}" for p in papers]
+    names = label_clusters(texts, labels)
     clusters = []
     for cid in sorted({int(l) for l in labels if l >= 0}):
         members = [i for i, l in enumerate(labels) if l == cid]
         clusters.append({"cluster_id": cid, "size": len(members),
-                         "keywords": _label_cluster([texts[i] for i in members])})
+                         "keywords": names.get(cid, "unlabeled")})
     clusters.sort(key=lambda c: -c["size"])
     for c in clusters[:15]:
         print(f"  [{c['cluster_id']:>4}] {c['size']:>5}  {c['keywords']}")
@@ -151,13 +152,24 @@ def main(argv: list[str] | None = None) -> int:
          "tensorPath": "data/umap3d.bytes", "metadataPath": "data/metadata.tsv"},
     ]}, indent=2))
     from collections import Counter
-    months = Counter((p["published_at"] or "")[:7] for p in papers)
+    counts = Counter((p["published_at"] or "")[:7] for p in papers)
+    # Each month carries how many days of it the window actually covers, so the
+    # display can read activity as a rate. The two clipped ends are the reason:
+    # February starts on the 4th and August stops mid-month, so on volume alone
+    # they look quiet when they are merely short — August sat at 6% of the May
+    # peak by paper count and 71% by papers per day.
+    months = {}
+    for m in sorted(counts):
+        first = date.fromisoformat(m + "-01")
+        nxt = (first.replace(day=28) + timedelta(days=4)).replace(day=1)
+        months[m] = {"papers": counts[m],
+                     "days": (min(hi, nxt) - max(lo, first)).days}
     last_day = hi - timedelta(days=1)
     month_end = (last_day.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
     (out / "arxiv_meta.json").write_text(json.dumps({
         "window": f"{lo}..{hi}", "papers": len(papers), "shipped": n,
         "min_cluster_size": mcs, "noise": noise,
-        "months": dict(sorted(months.items())),
+        "months": months,
         "partial_last_month": last_day < month_end,
         "clusters": clusters}, indent=2))
     print(f"saved -> {out}/")

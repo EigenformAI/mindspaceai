@@ -30,7 +30,7 @@ import numpy as np
 import yaml
 from .. import paths
 
-from ..cluster import _label_cluster, cluster_hdbscan, reduce_umap
+from ..cluster import cluster_hdbscan, label_clusters, reduce_umap
 
 _TAGS = re.compile(r"<[^>]+>")
 MAX_WORDS = 1500    # LessWrong HTML can run to tens of thousands of words
@@ -112,11 +112,12 @@ def main(argv: list[str] | None = None) -> None:
               f"({sum(s for _, s in cut)} docs) folded into noise: "
               + ", ".join(f"#{i}({s})" for i, s in cut))
 
+    names = label_clusters(texts, labels)
     clusters = []
     for cid in sorted(keep, key=lambda c: -int((labels == c).sum())):
         members = [i for i, l in enumerate(labels) if l == cid]
         clusters.append({"cluster_id": int(cid), "size": len(members),
-                         "keywords": _label_cluster([texts[i] for i in members])})
+                         "keywords": names.get(int(cid), "unlabeled")})
     noise = int((labels < 0).sum())
     print(f"{len(clusters)} clusters, {noise} noise ({noise / len(docs):.0%})")
     for c in clusters:

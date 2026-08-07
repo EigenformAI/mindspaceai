@@ -59,6 +59,22 @@ say what the shared referent is. Compress it into a single metaconcept if possib
 "explores AI" or "discusses models". Capture what is distinctive within the AI field as it currently stands."""
 
 
+_BUZZWORD_PROMPT = """\
+Below is a cluster of AI-related content that is lexically tight but semantically scattered: \
+the documents keep reaching for the same term, but they are not talking about the same thing.
+
+Keywords (TF-IDF): {keywords}
+
+Titles and excerpts:
+{samples}
+
+In ONE short paragraph, say what the shared term is doing here — which distinct things it is \
+being made to stand for across these documents. Do NOT invent a unifying concept. If there is \
+no single referent, say so plainly and list the senses you can actually see. Be descriptive, \
+not poetic. A term stretched across unrelated meanings is the finding; naming a false unity \
+would hide it."""
+
+
 def _get_content_map(db_path: str, urls: list[str]) -> dict[str, str]:
     conn = sqlite3.connect(db_path)
     placeholders = ",".join("?" * len(urls))
@@ -242,6 +258,19 @@ as precise, specific, and conceptually loaded as possible. \
 Avoid generic AI framing. Think like a physicist naming a phenomenon."""
 
 
+_BUZZWORD_SYNTH_PROMPT = """\
+Several AI models each independently described the same cluster of documents. The cluster is \
+lexically coherent but semantically scattered — one term doing more work than the idea behind \
+it. Their descriptions:
+
+{compressions}
+
+Name what the term has become, not what it once meant. One compressed phrase or sentence — \
+as precise and specific as possible. Do not resolve the senses into a single idea; the \
+spread IS the finding. If the models disagree about which senses the term now carries, that \
+disagreement is itself evidence, and worth stating."""
+
+
 def _synthesise(compressions: dict[str, str], synth_fn,
                 prompt_template: str = _SYNTH_PROMPT) -> str:
     comp_text = "\n".join(f"  {k}: {v}" for k, v in compressions.items() if not v.startswith("[ERROR"))
@@ -322,14 +351,26 @@ def _name_batch(real_clusters: list[dict], db_path: str, models: list[dict],
     return results
 
 
-def frame_clusters(frame: dict, db_path: str, top_n: int) -> list[dict]:
-    """One week's positive-gap clusters, in the shape `compress` already expects.
+def frame_clusters(frame: dict, db_path: str, top_n: int,
+                   buzzwords: int = 0, floor: float = -0.3) -> list[dict]:
+    """One week's clusters worth naming, in the shape `compress` already expects.
 
     frames.json stores membership as positions, not ids: `cluster["points"]`
     indexes into `frame["week_idx"]`, which indexes the corpus row order saved
     beside the projection. Resolving that chain here rather than re-clustering
     means the naming pass and the weekly view describe exactly the same
     documents — there is no second clustering to drift from the first.
+
+    Two bands are selected, not one. The top `top_n` by positive gap are the
+    emerging concepts. The `buzzwords` most negative below `floor` are the
+    opposite finding — one word carrying several meanings — and until they were
+    included the display had no buzzwords at all to show, which read as "there
+    are none" when the truth was that nothing had ever asked for them.
+
+    The floor exists because gaps sum to zero by construction: every week has a
+    most-negative cluster whether or not anything is actually stretched. At
+    -0.3 each of the eleven measured weeks has at least one real candidate
+    (2.6 on average); at -0.5 one week has none.
     """
     import numpy as np
 
@@ -337,9 +378,12 @@ def frame_clusters(frame: dict, db_path: str, top_n: int) -> list[dict]:
                                    allow_pickle=True)["article_ids"]]
     week_idx = frame["week_idx"]
 
-    ranked = sorted((c for c in frame["clusters"]
-                     if c.get("name_gap") is not None and c["name_gap"] > 0),
+    scored = [c for c in frame["clusters"] if c.get("name_gap") is not None]
+    ranked = sorted((c for c in scored if c["name_gap"] > 0),
                     key=lambda c: -c["name_gap"])[:top_n]
+    if buzzwords:
+        ranked += sorted((c for c in scored if c["name_gap"] < floor),
+                         key=lambda c: c["name_gap"])[:buzzwords]
     if not ranked:
         return []
 
@@ -399,7 +443,8 @@ def load_week_names(quarter_dir, latest_week: str | None = None):
 
 
 def compress_frames(top_n: int, db_path: str, synth_model: str | None,
-                    only_week: str | None = None) -> None:
+                    only_week: str | None = None, buzzwords: int = 3,
+                    force: bool = False) -> None:
     """Name every week's high-gap clusters, not just the newest one.
 
     The walkthrough in the brief names a cluster for week one, then for week
@@ -448,18 +493,36 @@ def compress_frames(top_n: int, db_path: str, synth_model: str | None,
 
     for frame in frames:
         week = frame["week_end"]
-        if week in by_week_labels and not only_week:
-            print(f"\n══ {week} — already named, skipping ══")
-            continue
-
-        clusters = frame_clusters(frame, db_path, top_n)
+        # Resume per cluster, not per week. Skipping a week that has any name
+        # at all is right only while the selection never changes; the moment it
+        # widens — a new band, a larger --top — every already-touched week is
+        # skipped whole and the new clusters are never named, silently and for
+        # free, which reads exactly like "there were none to add".
+        done = set(by_week_labels.get(week, {}))
+        candidates = frame_clusters(frame, db_path, top_n, buzzwords)
+        clusters = (candidates if force else
+                    [c for c in candidates if str(c["cluster_id"]) not in done])
         if not clusters:
-            print(f"\n══ {week} — no positive-gap clusters ══")
+            print(f"\n══ {week} — nothing new to name "
+                  f"({len(done)} already named) ══")
             continue
-        print(f"\n══ {week} — {len(clusters)} cluster(s) with a positive gap ══\n")
 
-        results = _name_batch(clusters, db_path, models, synth_fn,
-                              _NAME_GAP_PROMPT, _NAME_GAP_SYNTH_PROMPT, {})
+        # The two bands are asked opposite questions, so they cannot share a
+        # prompt: the emerging prompt tells the panel a shared referent exists
+        # and to find it. Handed a buzzword cluster it obliges, fluently, and
+        # invents the unity that the negative gap is evidence against.
+        emerging = [c for c in clusters if c["name_gap"] > 0]
+        buzz = [c for c in clusters if c["name_gap"] <= 0]
+        print(f"\n══ {week} — {len(emerging)} emerging"
+              + (f", {len(buzz)} buzzword" if buzz else "") + " ══\n")
+
+        results = []
+        if emerging:
+            results += _name_batch(emerging, db_path, models, synth_fn,
+                                   _NAME_GAP_PROMPT, _NAME_GAP_SYNTH_PROMPT, {})
+        if buzz:
+            results += _name_batch(buzz, db_path, models, synth_fn,
+                                   _BUZZWORD_PROMPT, _BUZZWORD_SYNTH_PROMPT, {})
 
         labels: dict[str, str] = {}
         if label_fn:
@@ -484,8 +547,14 @@ def compress_frames(top_n: int, db_path: str, synth_model: str | None,
                         labels[str(cid)] = label
                         print(f"  [{cid:3d}] {label}")
 
-        by_week_labels[week] = labels
-        by_week_comps[week] = results
+        if force:
+            by_week_labels[week] = labels
+            by_week_comps[week] = results
+        else:
+            # Merge, because this run only ever holds the clusters that were
+            # still missing — assigning would drop everything paid for before.
+            by_week_labels.setdefault(week, {}).update(labels)
+            by_week_comps.setdefault(week, []).extend(results)
         # Written after every week, so an interrupted run keeps what it paid
         # for — the ledger included. Recording spend only at the end meant a
         # run stopped halfway kept its names but lost the record of the money
@@ -700,9 +769,19 @@ def main(argv: list[str] | None = None):
                         help="name one weekly frame by its week_end date")
     parser.add_argument("--gaps", default=str(paths.QUARTER / "name_gaps.json"),
                         help="Path to name_gaps.json (used with --rank-by name-gap)")
+    parser.add_argument("--buzzwords", type=int, default=3, metavar="N",
+                        help="also name each week's N most negative clusters — "
+                             "one term carrying several meanings — from those "
+                             "below -0.3 (default 3; 0 disables)")
+    parser.add_argument("--force", action="store_true",
+                        help="re-name clusters that already have a name. The "
+                             "panel is not deterministic: two runs over the "
+                             "same clustering produce different prose, so this "
+                             "pays again and changes text that was reviewed")
     args = parser.parse_args(argv)
     if args.all_weeks or args.week:
-        compress_frames(args.top, args.db, args.synth or None, args.week)
+        compress_frames(args.top, args.db, args.synth or None, args.week,
+                        buzzwords=args.buzzwords, force=args.force)
     elif args.labels_only:
         label_only(args.db, str(paths.QUARTER / "compressions.json"))
     else:

@@ -117,7 +117,8 @@ def main(argv: list[str] | None = None) -> None:
         print("failed clusters keep their TF-IDF keywords in the sidebar — "
               "re-run to fill them in", file=sys.stderr)
     _write_spend(paths.COST, "label-all" if not args.latest else "label-latest")
-    print("next: pipeline.py --viz-only, then frontend/publish.sh")
+    print("next: `python -m mindspace export` — until then these labels exist "
+          "only in frames.json, not in anything you can look at")
 
 
 if __name__ == "__main__":

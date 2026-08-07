@@ -233,6 +233,15 @@ def build(background_days: int = 91, week_days: int = 7) -> None:
     print(f"  scored         {len(band_of)} documents carry a coherence band")
     print(f"  → {OUT}")
 
+    # The tensors and the two HTML views read the same clusters and the same
+    # names, so writing one without the other leaves the deliverable describing
+    # itself two different ways — and nothing fails when it happens. Keeping
+    # them in one command removes the chance to forget the second.
+    # Imported here rather than at module scope: pipeline reaches back into
+    # this module, so a top-level import closes the loop.
+    from ..pipeline import load_config, run_viz_only
+    run_viz_only(load_config())
+
 
 if __name__ == "__main__":
     build()

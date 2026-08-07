@@ -165,14 +165,12 @@ uv run python -m mindspace            # the command list
 uv run python -m mindspace scrape --week 1     # a week into the database
 uv run python -m mindspace embed               # vectors for what is new   (~$0.01/1k)
 uv run python -m mindspace quarter             # cluster: background + week + slider frames
-uv run python -m mindspace export              # projector tensors — TF-IDF names
-uv run python -m mindspace viz                 # redraw HTML without re-clustering
+uv run python -m mindspace export              # tensors + HTML — TF-IDF names
 
 # optional naming pass, then re-export so the names reach the tensors:
 uv run python -m mindspace fable --all-weeks   # every week's top name gaps  (~$6.15)
 uv run python -m mindspace label               # cheap labels for the rest   (~$0.25)
 uv run python -m mindspace export
-uv run python -m mindspace viz
 
 # viz #2 — one week on its own map, free, independent of the above:
 uv run python -m mindspace week
@@ -188,9 +186,10 @@ run. Running them against a failed or re-run clustering attaches expensive
 prose to the wrong documents, and nothing errors when it happens — so only
 run them on a `quarter` that finished cleanly.
 
-`viz` exists because re-clustering is never free: cluster ids change, and every
-generated label is addressed to an id. Cosmetic changes should redraw, not
-recompute.
+`export` writes the projector tensors and both HTML views in one step. They
+read the same clusters and the same names, so producing one without the other
+leaves the deliverable describing itself two different ways — and nothing fails
+when it happens, which is exactly why it is not two commands.
 
 ## Environment Variables (`.env`)
 

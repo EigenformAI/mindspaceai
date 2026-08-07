@@ -25,12 +25,12 @@ visualise
   arxiv   [--start YYYY-MM --end YYYY-MM]      viz #1: six months of papers, TF-IDF names
 
 name  (only meaningful after `quarter`)
-  fable [--top N]                              model panel -> Fable attractors     [paid, ~$0.80]
+  fable [--top N] [--buzzwords N]              model panel -> Fable attractors     [paid, ~$0.80]
   label                                        cheap topical labels for the rest   [paid, ~$0.25]
 
 publish
-  export                                       projector tensors from the last quarter run
-  viz                                          redraw the HTML without re-clustering
+  export                                       projector tensors + the HTML views,
+                                               from the last quarter run
 
 Anything after the command goes to that step: `python -m mindspace scrape --week 3`.
 
@@ -39,7 +39,7 @@ ids of the last `quarter` run, so running them after a failed or re-run
 clustering attaches expensive prose to the wrong documents — silently, with
 nothing failing. Run them only on a `quarter` that succeeded:
 
-    scrape -> embed -> quarter -> fable -> label -> export -> viz
+    scrape -> embed -> quarter -> fable -> label -> export
 """
 
 
@@ -62,9 +62,6 @@ def main(argv: list[str] | None = None) -> int:
     if cmd == "quarter":
         from . import pipeline
         return pipeline.main(["--skip-scrape", "--skip-embed", *rest]) or 0
-    if cmd == "viz":
-        from . import pipeline
-        return pipeline.main(["--viz-only", *rest]) or 0
     if cmd == "week":
         from .export import week
         return week.main(rest) or 0

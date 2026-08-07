@@ -57,14 +57,12 @@ uv run python -m mindspace arxiv embed         # papers have their own database
 uv run python -m mindspace arxiv               # the six-month paper view
 
 uv run python -m mindspace quarter             # cluster the three-month map
-uv run python -m mindspace export              # projector tensors — TF-IDF names
-uv run python -m mindspace viz                 # redraw the HTML
+uv run python -m mindspace export              # tensors + HTML — TF-IDF names
 
 # optional: name the highest-gap clusters of every week, then re-export
 uv run python -m mindspace fable --all-weeks   # panel + synthesis   [paid]
 uv run python -m mindspace label               # cheap labels        [paid]
 uv run python -m mindspace export
-uv run python -m mindspace viz
 ```
 
 `fable` and `label` write names keyed to the cluster ids of the last `quarter` run, so they belong between `quarter` and `export` and nowhere else. Names are stored per week, because cluster ids restart with every weekly clustering — cluster 3 in May and cluster 3 in August are unrelated. `fable --week YYYY-MM-DD` names a single week; the run is resumable and skips weeks already named.
