@@ -1,9 +1,41 @@
 [project]
 name = "mindspaceai"
 version = "0.1.0"
-description = "Emerging concepts in AI discussion space: collect, cluster, score coherence, visualise"
+description = "Surface emerging AI concepts from web discourse and arXiv papers: collect, embed, cluster (UMAP + HDBSCAN), score how nameable each cluster is, and export star-map projections."
 readme = "README.md"
 requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Eigenform" }]
+keywords = [
+    "ai",
+    "nlp",
+    "emerging-technology",
+    "research-trends",
+    "sentence-embeddings",
+    "clustering",
+    "umap",
+    "hdbscan",
+    "tf-idf",
+    "topic-modeling",
+    "trend-detection",
+    "arxiv",
+    "science-of-science",
+    "data-pipeline",
+    "openrouter",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing :: Linguistic",
+]
+
+[project.urls]
+Homepage = "https://github.com/EigenformAI/mindspaceai"
+Repository = "https://github.com/EigenformAI/mindspaceai"
+Issues = "https://github.com/EigenformAI/mindspaceai/issues"
 
 dependencies = [
     "feedparser>=6.0.11",      # rss

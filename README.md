@@ -1,6 +1,8 @@
 # mindspace
 
-A pipeline for surfacing emerging AI concepts from across the web: it collects discourse and papers, clusters them, scores how *nameable* each cluster is, and exports star-map projections of the idea space.
+> A research radar for AI: cluster web discourse and arXiv papers, score each cluster by how nameable it is, and map the result.
+
+A pipeline for surfacing emerging AI concepts from across the web: it collects discourse and papers, clusters them with sentence embeddings, UMAP and HDBSCAN, scores how *nameable* each cluster is, and exports star-map projections of the idea space.
 
 The goal isn't news. It's finding **proto-paradigms** — the conceptual frontier before it has a settled name. The clusters worth watching are the ones whose documents plainly describe the same thing while sharing almost no vocabulary: a concept that exists in the discourse before anyone has named it.
 
@@ -106,10 +108,22 @@ data/               gitignored: the corpus, outputs per view, cost ledgers
 
 ## Design decisions worth knowing
 
-**The projection is frozen.** UMAP re-fitted on a shifted window rearranges the whole map, which makes it impossible to tell whether a region moved because the ideas moved or because the algorithm did. Fitting once over the corpus and caching the coordinates means a basin keeps its position; a window only chooses which points are lit.
+### The projection is frozen
 
-**Windows are half-open and anchored on a date.** `[start, end)` ranges chain without a document falling into two of them, and a date anchor (rather than "now") makes two runs on the same day identical — which matters because generated names are addressed to cluster ids, and a shifted window silently changes those ids.
+UMAP re-fitted on a shifted window rearranges the whole map, which makes it impossible to tell whether a region moved because the ideas moved or because the algorithm did. Fitting once over the corpus and caching the coordinates means a basin keeps its position; a window only chooses which points are lit.
 
-**The name gap is a difference of ranks, not of values.** TF-IDF cosines sit near 0 and embedding cosines near 0.4 for nearly every cluster, so a raw difference is positive for almost everything and separates nothing.
+### Windows are half-open and anchored on a date
 
-**One key, one bill.** Every model call — embeddings, the panel, the synthesis, the labels — is routed through OpenRouter, so there is a single place for credentials to be wrong and a single ledger of what was spent.
+`[start, end)` ranges chain without a document falling into two of them, and a date anchor (rather than "now") makes two runs on the same day identical — which matters because generated names are addressed to cluster ids, and a shifted window silently changes those ids.
+
+### The name gap is a difference of ranks, not of values
+
+TF-IDF cosines sit near 0 and embedding cosines near 0.4 for nearly every cluster, so a raw difference is positive for almost everything and separates nothing.
+
+### One key, one bill
+
+Every model call — embeddings, the panel, the synthesis, the labels — is routed through OpenRouter, so there is a single place for credentials to be wrong and a single ledger of what was spent.
+
+---
+
+Part of [Eigenform](https://github.com/EigenformAI) · licensed [MIT](LICENSE)
