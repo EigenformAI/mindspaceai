@@ -3,6 +3,8 @@ from datetime import datetime, timedelta, timezone
 
 import requests
 
+from . import SourceUnavailable
+
 # `after` and `before` are sent to the server rather than filtering what comes
 # back. Without them the query means "the newest N posts", and lookback_days
 # only decides what to throw away afterwards — so it never bites:
@@ -29,6 +31,8 @@ _GQL_QUERY = """
 }
 """
 
+USER_AGENT = "mindspace/0.1 (research crawler; contact: eigenform.ai)"
+
 
 def _fetch(endpoint: str, source_name: str, limit: int, lookback_days: int,
            until: datetime | None = None) -> list[dict]:
@@ -40,15 +44,26 @@ def _fetch(endpoint: str, source_name: str, limit: int, lookback_days: int,
             json={"query": _GQL_QUERY % (limit, cutoff.date().isoformat(),
                                          until.date().isoformat())},
             timeout=60,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json",
+                     "User-Agent": USER_AGENT,
+                     "Accept": "application/json"},
         )
         if not resp.ok:
-            print(f"[{source_name}] HTTP {resp.status_code}: {resp.text[:600]}", file=sys.stderr)
+            ct = resp.headers.get("Content-Type", "")
+            if "html" in ct.lower() or resp.text.lstrip()[:9].lower() == "<!doctype":
+                print(f"[{source_name}] HTTP {resp.status_code} — blocked before "
+                      f"reaching the API (a challenge page came back, not JSON). "
+                      f"Nothing to retry against; wait and run again.",
+                      file=sys.stderr)
+            else:
+                print(f"[{source_name}] HTTP {resp.status_code}: {resp.text[:300]}",
+                      file=sys.stderr)
         resp.raise_for_status()
         data = resp.json()
     except Exception as exc:
-        print(f"[{source_name}] error: {exc}", file=sys.stderr)
-        return []
+        print(f"[{source_name}] returned nothing — {type(exc).__name__}",
+              file=sys.stderr)
+        raise SourceUnavailable(source_name, exc) from exc
 
     results = data.get("data", {}).get("posts", {}).get("results", []) or []
 

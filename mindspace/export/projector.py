@@ -191,21 +191,15 @@ def build(background_days: int = 91, week_days: int = 7) -> None:
     (OUT / "metadata.tsv").write_text(
         "\t".join(header) + "\n" + "\n".join(rows) + "\n", encoding="utf-8")
 
-    proj3_path = paths.QUARTER / "projection3d.npz"
+    from ..cluster import project_anchored
     ids = [a["id"] for a in articles]
-    coords3 = None
-    if proj3_path.exists():
-        saved = np.load(proj3_path, allow_pickle=True)
-        if [str(x) for x in saved["article_ids"]] == ids:
-            coords3 = saved["coords"]
-            print("  reusing projection3d.npz — corpus unchanged")
-    if coords3 is None:
-        print("  fitting 3D UMAP once (a few minutes; cached afterwards)…")
-        from ..cluster import reduce_umap
-        coords3 = reduce_umap(vectors.astype(np.float32), n_neighbors=15,
-                              n_components=3, min_dist=0.05, metric="cosine")
-        np.savez(proj3_path, coords=coords3,
-                 article_ids=np.array(ids))
+    coords3 = project_anchored(
+        vectors.astype(np.float32), ids,
+        paths.QUARTER / "umap_anchor_3d.joblib",
+        n_neighbors=15, n_components=3, min_dist=0.05, metric="cosine",
+        log=lambda m: print(f"  {m}"))
+    np.savez(paths.QUARTER / "projection3d.npz",
+             coords=coords3, article_ids=np.array(ids))
     (OUT / "umap3d.bytes").write_bytes(
         np.asarray(coords3, dtype="<f4").tobytes())
 

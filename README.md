@@ -48,28 +48,53 @@ cp .env.example .env          # OPENROUTER_API_KEY, XAI_API_KEY
 uv sync
 
 uv run python -m mindspace                     # the command list
-
-uv run python -m mindspace scrape --week 1     # a week into the database
-uv run python -m mindspace embed               # vectors for what is new
-
-uv run python -m mindspace week                # the weekly view (free)
-
-uv run python -m mindspace arxiv scrape --start 2026-02 --end 2026-08
-uv run python -m mindspace arxiv embed         # papers have their own database
-uv run python -m mindspace arxiv               # the six-month paper view
-
-uv run python -m mindspace quarter             # cluster the three-month map
-uv run python -m mindspace export              # tensors + HTML, TF-IDF names
-
-# optional: name the highest-gap clusters of every week, then re-export
-uv run python -m mindspace fable --all-weeks   # panel + synthesis   [paid]
-uv run python -m mindspace label               # cheap labels        [paid]
-uv run python -m mindspace export
 ```
 
-`fable` and `label` write names keyed to the cluster ids of the last `quarter` run, so they belong between `quarter` and `export` and nowhere else. Names are stored per week, because cluster ids restart with every weekly clustering: cluster 3 in May and cluster 3 in August are unrelated. `fable --week YYYY-MM-DD` names a single week; the run is resumable and skips weeks already named.
+**The discourse map** (views 2 and 3) — one pass, run weekly:
 
-Leaving both naming steps out is a supported outcome, not a half-finished one: every view falls back to TF-IDF terms, and the whole quarter costs nothing.
+```bash
+uv run python -m mindspace scrape --week 1     # the last 7 days into the database
+uv run python -m mindspace embed               # vectors for what is new  [paid, cents]
+uv run python -m mindspace quarter             # project, cluster, score
+uv run python -m mindspace fable --all-weeks   # name the emerging and buzzword clusters  [paid]
+uv run python -m mindspace export              # tensors + HTML
+
+# the two variants the published page reads, from this one run
+rsync -a --delete --exclude 'umap_anchor*' \
+      data/output/quarter/ data/output/quarter_with_fable/
+rsync -a --delete --exclude 'umap_anchor*' --exclude 'name_gap_*' \
+      data/output/quarter/ data/output/quarter_without_fable/
+```
+
+**The paper map** (view 1) — a separate database, on its own schedule:
+
+```bash
+uv run python -m mindspace arxiv scrape --start 2026-08 --end 2026-08
+uv run python -m mindspace arxiv embed         # [paid, cents]
+uv run python -m mindspace arxiv               # cluster and export
+```
+
+### The order is not a preference
+
+`fable` names clusters by id, and `quarter` is what assigns those ids, so naming must follow the clustering it was computed against. Run them out of order and expensive prose is attached to the wrong documents — silently, with nothing failing.
+
+`export` must follow `fable`, or the names exist only in `frames.json` and reach no view.
+
+### Do not move `data/output/quarter/`
+
+It holds `umap_anchor.joblib`, the fitted projection. Documents already placed read their coordinates back from it unchanged, which is what keeps cluster ids — and therefore the names bought against them — stable from one week to the next. Copy the directory, never move it, and watch this line in `quarter`:
+
+```
+[umap] anchor: 5955 documents keep their coordinates, N placed onto the same map
+```
+
+If it instead says `no anchor yet`, the anchor is gone: the projection will be relearned, every document will move, and every generated name will silently belong to a different cluster. Stop before running `fable`.
+
+The anchor should be deleted deliberately every few months, so the map can be relearned over a corpus that has moved on. That expires all names once, which is the price of the map matching the field again.
+
+### Cadence
+
+Run on the same weekday, seven days apart. Weekly windows are measured back from the run date, so an exactly weekly rhythm keeps the older weeks' date boundaries identical and only adds one new week at the front, which is what lets `fable` skip everything already named and pay for the new week alone. A run more than seven days late leaves a gap in the scrape that nothing later fills.
 
 Backfilling is week by week (`scrape --week 2`, `--week 3`, and so on) because several sources cannot be asked for a wide historical range in one call.
 

@@ -30,6 +30,7 @@ import yaml
 
 from .. import db, paths
 from ..cluster import cluster_hdbscan, label_clusters, reduce_umap
+from ..sources import text_for_tfid
 
 
 def _month_range(start: str, end: str | None) -> tuple[date, date]:
@@ -105,7 +106,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{n_clusters} clusters, {noise} noise ({noise / len(papers):.0%}) "
           f"at min_cluster_size {mcs}")
 
-    texts = [f"{p['title']} {p['content']}" for p in papers]
+    texts = [text_for_tfidf(p["title"], p["content"]) for p in papers]
     names = label_clusters(texts, labels)
     clusters = []
     for cid in sorted({int(l) for l in labels if l >= 0}):
