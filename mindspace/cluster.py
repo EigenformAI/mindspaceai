@@ -1,5 +1,6 @@
 import re
 from collections import defaultdict
+from pathlib import Path
 
 import numpy as np
 from sklearn.cluster import HDBSCAN
@@ -18,6 +19,62 @@ def reduce_umap(embeddings: np.ndarray, n_neighbors: int, n_components: int,
         verbose=False,
     )
     return reducer.fit_transform(embeddings)
+
+
+def project_anchored(embeddings: np.ndarray, ids: list[str], anchor: Path,
+                     *, n_neighbors: int, n_components: int, min_dist: float,
+                     metric: str, log=print) -> np.ndarray:
+    """Coordinates on a map that is learned once and then kept.
+
+    UMAP does not compute a position, it learns an arrangement, and it learns a
+    different one from a different corpus. Fitting afresh each run therefore
+    moved every document, including the ones that had not changed — measured on
+    this corpus, adding a week (+10% of documents) left only 8 of 24 of the
+    previous week's clusters ≥90% intact, and renumbered even those. Cluster
+    ids are what names are addressed to, so every run invalidated every name.
+
+    Keeping the fitted model fixes that at the root: documents already placed
+    read their coordinates back unchanged, and only new ones are transformed
+    onto the same map. Weekly clusterings over unchanged documents then repeat
+    exactly, ids included.
+
+    The map is never refitted while the anchor exists — that is the guarantee.
+    It is also the expiry date: as the corpus drifts from what the map was
+    learned on, new documents are placed increasingly badly, so the anchor
+    should be deleted and relearned periodically, accepting that names expire
+    once when it is.
+    """
+    import joblib
+    import umap
+
+    ids = [str(i) for i in ids]
+    if anchor.exists():
+        saved = joblib.load(anchor)
+        placed = saved["coords"]
+        fresh = [i for i in ids if i not in placed]
+        log(f"[umap] anchor: {len(ids) - len(fresh)} documents keep their "
+            f"coordinates, {len(fresh)} placed onto the same map")
+        if fresh:
+            at = {i: n for n, i in enumerate(ids)}
+            new = saved["reducer"].transform(
+                np.vstack([embeddings[at[i]] for i in fresh]).astype(np.float32))
+            placed.update(zip(fresh, np.asarray(new)))
+            joblib.dump(saved, anchor, compress=3)
+        return np.vstack([placed[i] for i in ids])
+
+    log(f"[umap] no anchor yet — learning the map from {len(ids)} documents "
+        f"(minutes); later runs reuse it")
+    reducer = umap.UMAP(n_neighbors=n_neighbors, n_components=n_components,
+                        min_dist=min_dist, metric=metric, random_state=42,
+                        verbose=False)
+    coords = np.asarray(reducer.fit_transform(embeddings))
+    anchor.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump({"reducer": reducer, "coords": dict(zip(ids, coords))},
+                anchor, compress=3)
+    log(f"[umap] anchor written → {anchor.name} "
+        f"({anchor.stat().st_size / 1048576:.0f} MB). Delete it to relearn the "
+        f"map; doing so expires every generated name.")
+    return coords
 
 
 def cluster_hdbscan(coords: np.ndarray, min_cluster_size: int,
@@ -41,7 +98,7 @@ _EXTRA_STOPWORDS = frozenset("""
     way ways people person actually pretty lot lots new good little doing done
     used using make makes made want wants need needs know known say says said
     look looks looking come comes going went able sure yeah okay
-    don doesn isn didn wasn aren won couldn shouldn wouldn haven hasn
+    don doesn isn didn wasn aren won couldn shouldn wouldn haven hasn model models
 """.split())
 
 _STOPWORDS = sorted(ENGLISH_STOP_WORDS | _EXTRA_STOPWORDS)
@@ -105,7 +162,7 @@ def _label_cluster(texts: list[str], top_n: int = 5) -> str:
 
 
 def build_clusters(articles: list[dict], labels: np.ndarray) -> list[dict]:
-    from .sources import strip_html
+    from .sources import text_for_tfidf
 
     cluster_map: dict[int, list[int]] = defaultdict(list)
     for i, lbl in enumerate(labels):
@@ -114,7 +171,8 @@ def build_clusters(articles: list[dict], labels: np.ndarray) -> list[dict]:
     clusters = []
     for lbl, indices in sorted(cluster_map.items()):
         texts = [
-            (articles[i].get("title", "") + " " + strip_html(articles[i].get("content", "")))
+            text_for_tfidf(articles[i].get("title", ""),
+                           articles[i].get("content", ""))
             for i in indices
         ]
         name = "noise" if lbl == -1 else _label_cluster(texts)

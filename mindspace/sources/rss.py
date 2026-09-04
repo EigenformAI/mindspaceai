@@ -27,10 +27,60 @@ no <content:encoded>. Nothing here can recover that; the text is only on the
 post's own page.
 """
 
+import json
+import re
 import sys
+import urllib.request
 from datetime import datetime, timedelta, timezone
 
 import feedparser
+
+_LD = re.compile(r'<script type="application/ld\+json">(.*?)</script>', re.S)
+_META = re.compile(r'<meta[^>]+name="author"[^>]+content="([^"]*)"', re.I)
+_UA = "mindspaceai/1.0"
+
+
+def _ld_names(node) -> list[str]:
+    """schema.org `author` is a Person, an Organization, or a list of either."""
+    out = []
+    for x in (node if isinstance(node, list) else [node]):
+        if isinstance(x, dict) and x.get("name"):
+            out.append(str(x["name"]).strip())
+        elif isinstance(x, str) and x.strip():
+            out.append(x.strip())
+    return out
+
+
+def _page_author(link: str, timeout: int = 15) -> str:
+    """The byline from the post's own page, for feeds that omit it.
+
+    All four feeds here publish one, in one of two standard places, and none of
+    it has to be inferred: HuggingFace names the people who wrote the post,
+    Latent Space declares itself an Organization, Simon Willison and Dwarkesh
+    use a plain <meta> tag. Guessing from the feed name instead would have been
+    wrong for two of the four — "Latent Space" where the publication spells
+    itself "Latent.Space", and the site credited for work by named people.
+
+    Returns "" on any failure. A byline is worth one request, never a scrape.
+    """
+    try:
+        req = urllib.request.Request(link, headers={"User-Agent": _UA})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            html = r.read().decode("utf-8", errors="replace")
+    except Exception:
+        return ""
+    for m in _LD.finditer(html):
+        try:
+            doc = json.loads(m.group(1))
+        except Exception:
+            continue
+        for d in (doc if isinstance(doc, list) else [doc]):
+            if isinstance(d, dict) and d.get("author"):
+                names = _ld_names(d["author"])
+                if names:
+                    return ", ".join(names)
+    m = _META.search(html)
+    return m.group(1).strip() if m else ""
 
 
 def scrape_rss(name: str, url: str, lookback_days: int = 30,
@@ -69,7 +119,7 @@ def scrape_rss(name: str, url: str, lookback_days: int = 30,
             "url": link,
             "title": getattr(entry, "title", ""),
             "content": content,
-            "author": getattr(entry, "author", ""),
+            "author": getattr(entry, "author", "") or _page_author(link),
             "published_at": published,
         })
 

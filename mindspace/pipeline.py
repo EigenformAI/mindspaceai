@@ -80,9 +80,36 @@ def _flush(items: list[dict]) -> int:
     return saved
 
 
-def run_scrapers(cfg: dict, lookback_days: int) -> int:
+def _run_source(name: str, fetch, failed: list[str], noun: str = "items") -> int:
+    """Fetch one source, store what came back, and record it if it could not.
+
+    A source that fails and a source with nothing new both used to print
+    "0 items" and let the run finish clean. On a weekly pipeline that is how a
+    feed goes dark for a month unnoticed — the totals only sag, and the first
+    real symptom is a cluster that stops mentioning it.
+    """
+    from .sources import SourceUnavailable
+    try:
+        items = fetch()
+    except SourceUnavailable as exc:
+        failed.append(exc.source)
+        print(f"         ! {exc.source} unavailable — nothing collected from it "
+              f"this run", file=sys.stderr)
+        return 0
+    except Exception as exc:
+        failed.append(name)
+        print(f"         ! {name} failed: {type(exc).__name__}: {exc}",
+              file=sys.stderr)
+        return 0
+    saved = _flush(items)
+    print(f"         → {len(items)} {noun} ({saved} new)")
+    return saved
+
+
+def run_scrapers(cfg: dict, lookback_days: int) -> tuple[int, list[str]]:
     from . import db
     total = 0
+    failed: list[str] = []
     sources = cfg.get("sources", {})
 
     # Exclusive upper bound of the scrape window. Live runs use this moment;
@@ -99,52 +126,61 @@ def run_scrapers(cfg: dict, lookback_days: int) -> int:
     from .sources.rss import scrape_rss
     for feed in sources.get("rss", []):
         print(f"[scrape] RSS: {feed['name']}")
-        try:
-            items = scrape_rss(feed["name"], feed["url"], lookback_days,
-                               until=until)
-            saved = _flush(items)
-            print(f"         → {len(items)} items ({saved} new)")
-            total += saved
-        except Exception as exc:
-            print(f"         ! error: {exc}", file=sys.stderr)
+        total += _run_source(
+            feed["name"],
+            lambda f=feed: scrape_rss(f["name"], f["url"], lookback_days,
+                                      until=until),
+            failed)
 
-    # LessWrong
+    # LessWrong — GraphQL first, then the site's agent API if it is refused.
+    # GraphQL stays primary: one request for the whole window, with the date
+    # bounds applied server-side. The fallback costs a request per post and its
+    # 100-post ceiling reaches back only about five days, so it repairs a gap
+    # rather than replacing the normal path.
     lw_cfg = sources.get("lesswrong", {})
     if lw_cfg.get("enabled"):
         from .sources.lesswrong import scrape_lesswrong
         print("[scrape] LessWrong")
-        items = scrape_lesswrong(lw_cfg.get("limit", 40), lookback_days,
-                                 until=until)
-        saved = _flush(items)
-        print(f"         → {len(items)} items ({saved} new)")
-        total += saved
+
+        from .sources import SourceUnavailable
+
+        def _lesswrong():
+            try:
+                return scrape_lesswrong(lw_cfg.get("limit", 40), lookback_days,
+                                        until=until)
+            except SourceUnavailable:
+                from .sources.lesswrong_api import scrape_lesswrong_api
+                print("         · GraphQL refused — falling back to the "
+                      "documented agent API (/api/latest)", file=sys.stderr)
+                return scrape_lesswrong_api(lookback_days, until=until)
+
+        total += _run_source("LessWrong", _lesswrong, failed)
 
     # Alignment Forum
     af_cfg = sources.get("alignment_forum", {})
     if af_cfg.get("enabled"):
         from .sources.lesswrong import scrape_alignment_forum
         print("[scrape] Alignment Forum")
-        items = scrape_alignment_forum(af_cfg.get("limit", 40), lookback_days,
-                                       until=until)
-        saved = _flush(items)
-        print(f"         → {len(items)} items ({saved} new)")
-        total += saved
+        total += _run_source(
+            "Alignment Forum",
+            lambda: scrape_alignment_forum(af_cfg.get("limit", 40),
+                                           lookback_days, until=until),
+            failed)
 
     # Hacker News
     hn_cfg = sources.get("hackernews", {})
     if hn_cfg.get("enabled"):
         from .sources.hackernews import scrape_hackernews
         print("[scrape] Hacker News")
-        items = scrape_hackernews(
-            hn_cfg.get("queries", ["AI"]),
-            hn_cfg.get("limit_per_query", 50),
-            lookback_days,
-            min_points=hn_cfg.get("min_points", 10),
-            until=until,
-        )
-        saved = _flush(items)
-        print(f"         → {len(items)} items ({saved} new, deduped)")
-        total += saved
+        total += _run_source(
+            "Hacker News",
+            lambda: scrape_hackernews(
+                hn_cfg.get("queries", ["AI"]),
+                hn_cfg.get("limit_per_query", 50),
+                lookback_days,
+                min_points=hn_cfg.get("min_points", 10),
+                until=until),
+            failed, noun="items, deduped")
 
     # GitHub Trending
     gh_cfg = sources.get("github_trending", {})
@@ -161,23 +197,23 @@ def run_scrapers(cfg: dict, lookback_days: int) -> int:
             print("[scrape] GitHub Trending")
             # lookback_days picks the `since` window — GitHub's default is
             # `daily`, so a weekly run was seeing one day in seven.
-            items = scrape_github_trending(lookback_days)
-            saved = _flush(items)
-            print(f"         → {len(items)} items ({saved} new)")
-            total += saved
+            total += _run_source("GitHub Trending",
+                                 lambda: scrape_github_trending(lookback_days),
+                                 failed)
 
     # HF Papers
     hf_cfg = sources.get("hf_papers", {})
     if hf_cfg.get("enabled"):
         from .sources.hf_papers import scrape_hf_papers
         print("[scrape] HuggingFace Papers")
-        items = scrape_hf_papers(hf_cfg.get("limit_per_day",
-                                            hf_cfg.get("limit", 50)),
-                                 lookback_days, until=until)
-        saved = _flush(items)
-        print(f"         → {len(items)} items ({saved} new)")
-        total += saved
-        
+        total += _run_source(
+            "HuggingFace Papers",
+            lambda: scrape_hf_papers(
+                hf_cfg.get("limit_per_day", hf_cfg.get("limit", 50)),
+                lookback_days, until=until),
+            failed)
+
+
     # Twitter via Grok API live search
     tw_cfg = sources.get("twitter", {})
     if tw_cfg.get("enabled"):
@@ -187,18 +223,17 @@ def run_scrapers(cfg: dict, lookback_days: int) -> int:
         else:
             from .sources.grok_twitter import scrape_grok_twitter
             print("[scrape] Twitter (Grok live search)")
-            items = scrape_grok_twitter(
-                prompts=tw_cfg.get("prompts", []),
-                api_key=xai_key,
-                lookback_days=lookback_days,
-                limit_per_prompt=tw_cfg.get("limit_per_prompt", 15),
-                until=until,
-            )
-            saved = _flush(items)
-            print(f"         → {len(items)} tweets ({saved} new)")
-            total += saved
+            total += _run_source(
+                "Twitter/Grok",
+                lambda: scrape_grok_twitter(
+                    prompts=tw_cfg.get("prompts", []),
+                    api_key=xai_key,
+                    lookback_days=lookback_days,
+                    limit_per_prompt=tw_cfg.get("limit_per_prompt", 15),
+                    until=until),
+                failed, noun="tweets")
 
-    return total
+    return total, failed
 
 
 def _month_range(start: str, end: str) -> tuple[date, date]:
@@ -340,9 +375,9 @@ def run_cluster_and_output(cfg: dict, lookback_days: int):
     sliding the window only changes which points are drawn.
     """
     from . import db
-    from .cluster import build_clusters, cluster_hdbscan, reduce_umap
+    from .cluster import build_clusters, cluster_hdbscan, project_anchored
     from .coherence import corpus_tfidf, score_clusters, write_name_gaps
-    from .sources import strip_html
+    from .sources import text_for_tfidf
 
     coh_cfg = cfg.get("coherence", {})
     q = (cfg.get("modes") or {}).get("quarter") or {}
@@ -387,34 +422,20 @@ def run_cluster_and_output(cfg: dict, lookback_days: int):
     out_dir = Path(cfg.get("output", {}).get("dir", paths.QUARTER))
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # Reuse the saved projection when the corpus is unchanged. UMAP is
-    # deterministic under random_state, so a refit on identical input returns
-    # identical coordinates — four minutes to reproduce a file already on disk.
-    # Guarded on the article ids, not just the count: the coordinates are
-    # positional, so if the corpus changed at all, row i is a different document
-    # and every point would be silently mislabelled.
-    coords = None
-    proj_path = out_dir / "projection.npz"
+    # The map is learned once and then kept, so a document's coordinates never
+    # move again. The previous cache reused the projection only when the corpus
+    # was byte-for-byte unchanged, which on a weekly run is never: one new week
+    # refitted everything, and the weekly clusterings — and the cluster ids the
+    # names are addressed to — came out different for weeks whose documents had
+    # not changed at all.
     corpus_ids = [a["id"] for a in corpus]
-    if proj_path.exists():
-        try:
-            saved = np.load(proj_path, allow_pickle=True)
-            if [str(x) for x in saved["article_ids"]] == corpus_ids:
-                coords = saved["coords"]
-                print(f"[cluster] reusing projection.npz — corpus unchanged "
-                      f"({len(corpus_ids)} documents)")
-        except (KeyError, ValueError, OSError):
-            coords = None
-
-    if coords is None:
-        print("[cluster] UMAP — fitting once over the whole corpus…")
-        coords = reduce_umap(
-            embeddings,
-            n_neighbors=cl_cfg.get("n_neighbors", 15),
-            n_components=cl_cfg.get("n_components", 2),
-            min_dist=cl_cfg.get("min_dist", 0.05),
-            metric=cl_cfg.get("metric", "cosine"),
-        )
+    coords = project_anchored(
+        embeddings, corpus_ids, out_dir / "umap_anchor.joblib",
+        n_neighbors=cl_cfg.get("n_neighbors", 15),
+        n_components=cl_cfg.get("n_components", 2),
+        min_dist=cl_cfg.get("min_dist", 0.05),
+        metric=cl_cfg.get("metric", "cosine"),
+        log=lambda m: print(f"[cluster] {m}"))
     background = corpus
 
     def _cluster(where, what, min_cluster_size):
@@ -452,7 +473,7 @@ def run_cluster_and_output(cfg: dict, lookback_days: int):
     # TF-IDF is fitted over the WHOLE background, not just this week's subset:
     # "corpus-wide" in the spec, and the only way the numbers mean the same
     # thing from one cluster to the next.
-    texts = [f"{a.get('title', '')} {strip_html(a.get('content', ''))}"
+    texts = [text_for_tfidf(a.get("title", ""), a.get("content", ""))
              for a in background]
     _, tfidf = corpus_tfidf(texts)
 
@@ -755,8 +776,12 @@ def main(argv: list[str] | None = None):
 
     if not args.skip_scrape:
         print(f"\n── Scraping (lookback: {lookback_days}d) ──────────────────")
-        new_count = run_scrapers(cfg, lookback_days)
+        new_count, failed = run_scrapers(cfg, lookback_days)
         print(f"\n[db] {new_count} new articles saved | total: {db.article_count()}")
+        if failed:
+            print(f"[db] INCOMPLETE — no data from: {', '.join(failed)}. "
+                  f"This window is missing them permanently unless the scrape "
+                  f"is repeated before clustering.", file=sys.stderr)
 
     if args.scrape_only:
         print("\n[done] scrape-only mode — skipping embed and cluster")
